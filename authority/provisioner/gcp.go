@@ -59,6 +59,13 @@ func newGCPConfig() *gcpConfig {
 	}
 }
 
+// CertificateACL defines a principal (identified by service account email)
+//  and the domains this principal should be allowed to create certificates for.
+type CertificateACL struct {
+	Principal string   `json:"principal"`
+	Domains   []string `json:"domains"`
+}
+
 // GCP is the provisioner that supports identity tokens created by the Google
 // Cloud Platform metadata API.
 //
@@ -76,14 +83,15 @@ func newGCPConfig() *gcpConfig {
 // https://cloud.google.com/compute/docs/instances/verifying-instance-identity
 type GCP struct {
 	*base
-	Type                   string   `json:"type"`
-	Name                   string   `json:"name"`
-	ServiceAccounts        []string `json:"serviceAccounts"`
-	ProjectIDs             []string `json:"projectIDs"`
-	DisableCustomSANs      bool     `json:"disableCustomSANs"`
-	DisableTrustOnFirstUse bool     `json:"disableTrustOnFirstUse"`
-	InstanceAge            Duration `json:"instanceAge,omitempty"`
-	Claims                 *Claims  `json:"claims,omitempty"`
+	Type                   string    `json:"type"`
+	Name                   string    `json:"name"`
+	ServiceAccounts        []string  `json:"serviceAccounts"`
+	ProjectIDs             []string  `json:"projectIDs"`
+	DisableCustomSANs      bool      `json:"disableCustomSANs"`
+	DisableTrustOnFirstUse bool      `json:"disableTrustOnFirstUse"`
+	CertificateAcls        []CertificateACL `json:"certificateAcls"`
+	InstanceAge            Duration  `json:"instanceAge,omitempty"`
+	Claims                 *Claims   `json:"claims,omitempty"`
 	claimer                *Claimer
 	config                 *gcpConfig
 	keyStore               *keyStore
@@ -220,11 +228,19 @@ func (p *GCP) AuthorizeSign(ctx context.Context, token string) ([]SignOption, er
 	// There's no way to trust them other than TOFU.
 	var so []SignOption
 	if p.DisableCustomSANs {
+		var CommonNames []string
 		dnsName1 := fmt.Sprintf("%s.c.%s.internal", ce.InstanceName, ce.ProjectID)
 		dnsName2 := fmt.Sprintf("%s.%s.c.%s.internal", ce.InstanceName, ce.Zone, ce.ProjectID)
-		so = append(so, commonNameSliceValidator([]string{
-			ce.InstanceName, ce.InstanceID, dnsName1, dnsName2,
-		}))
+
+		for i := range p.CertificateAcls {
+			if p.CertificateAcls[i].Principal == claims.Email {
+				CommonNames = append(CommonNames, p.CertificateAcls[i].Domains...)
+			}
+		}
+
+		CommonNames = append(CommonNames, []string{ce.InstanceName, ce.InstanceID, dnsName1, dnsName2}...)
+
+		so = append(so, commonNameSliceValidator(CommonNames))
 		so = append(so, dnsNamesValidator([]string{
 			dnsName1, dnsName2,
 		}))
